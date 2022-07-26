@@ -15,18 +15,17 @@
     |     13 March 2021     |     Dejan Kostyszyn      |  Implemented necessary functions.   |
     |    -------------      |           NA             |  Forgot to keep track of changes ): |
     |    22 January 2022    |     Shrajan Bhandary     | Cleaned up stuff and added comments.|
+    |    26 July 2022       |     Shrajan Bhandary     |           Fixed minor bugs.         |
     |----------------------------------------------------------------------------------------|
 '''
 
 # LIBRARY IMPORTS
 import numpy as np
 import matplotlib.pyplot as plt
-import os, torch, medpy, sys, torch, random
+import os, torch, cc3d, sys, torch, elasticdeform
 from medpy.metric.binary import hd, dc, asd, assd, precision, sensitivity, specificity
 import SimpleITK as sitk
 from collections import OrderedDict
-
-import elasticdeform
 import torchio as tio
 from sklearn.metrics.cluster import pair_confusion_matrix
 
@@ -109,7 +108,7 @@ def normalize(data, opt):
       sys.exit("Normalize parameter must be one out of {None, local, global, -11}")
   return data
 
-def get_label_centroid(seg):
+def get_roi_centroid(seg):
   """
   Input param: 3D binary array.
   Computes the centroid by taking the mittle of the
@@ -146,41 +145,20 @@ def select_random_patches(data, label, mask, opt):
   x, y, z = data.shape[-3], data.shape[-2], data.shape[-1]
 
   data_batch = torch.zeros((opt.input_channels, patch_shape[0], patch_shape[1], patch_shape[2]))
-  label_batch = torch.zeros((opt.output_channels, patch_shape[0], patch_shape[1], patch_shape[2]))
+  label_batch = torch.zeros((1, patch_shape[0], patch_shape[1], patch_shape[2]))
 
-  r = torch.rand(1)
-  if r < opt.p_foreground:
-    if opt.input_channels == 2:
-      c_x, c_y, c_z = get_label_centroid(mask)
-    else:  
-      c_x, c_y, c_z = get_label_centroid(label)
-      
-    l_x, r_x = get_extreme_coordinates(c_x, patch_shape[0], x)
-    l_y, r_y = get_extreme_coordinates(c_y, patch_shape[1], y)
-    l_z, r_z = get_extreme_coordinates(c_z, patch_shape[2], z)
+  l_x = torch.randint(low=0, high=x-patch_shape[0], size=(1,), dtype=torch.int16)[0]
+  l_y = torch.randint(low=0, high=y-patch_shape[1], size=(1,), dtype=torch.int16)[0]
+  l_z = torch.randint(low=0, high=z-patch_shape[2], size=(1,), dtype=torch.int16)[0]
+
+  l_batch = label[l_x:l_x + patch_shape[0], l_y:l_y + patch_shape[1], l_z:l_z + patch_shape[2]]
+  d_batch = data[l_x:l_x + patch_shape[0], l_y:l_y + patch_shape[1], l_z:l_z + patch_shape[2]]
   
-    l_batch = label[l_x:r_x , l_y:r_y, l_z:r_z]
-    d_batch = data[l_x:r_x , l_y:r_y, l_z:r_z]
-
-    label_batch[0, ...] = l_batch
-    data_batch[0, ...] = d_batch
-    if opt.input_channels == 2:
-        m_batch = mask[l_x:r_x , l_y:r_y, l_z:r_z]
-        data_batch[1, ...] = m_batch
-  
-  else:
-    l_x = torch.randint(low=0, high=x-patch_shape[0], size=(1,), dtype=torch.int16)[0]
-    l_y = torch.randint(low=0, high=y-patch_shape[1], size=(1,), dtype=torch.int16)[0]
-    l_z = torch.randint(low=0, high=z-patch_shape[2], size=(1,), dtype=torch.int16)[0]
-
-    l_batch = label[l_x:l_x + patch_shape[0], l_y:l_y + patch_shape[1], l_z:l_z + patch_shape[2]]
-    d_batch = data[l_x:l_x + patch_shape[0], l_y:l_y + patch_shape[1], l_z:l_z + patch_shape[2]]
-    
-    label_batch[0, ...] = l_batch
-    data_batch[0, ...] = d_batch
-    if opt.input_channels == 2:
-        m_batch = mask[l_x:l_x + patch_shape[0], l_y:l_y + patch_shape[1], l_z:l_z + patch_shape[2]]
-        data_batch[1, ...] = m_batch
+  label_batch[0, ...] = l_batch
+  data_batch[0, ...] = d_batch
+  if opt.input_channels == 2:
+      m_batch = mask[l_x:l_x + patch_shape[0], l_y:l_y + patch_shape[1], l_z:l_z + patch_shape[2]]
+      data_batch[1, ...] = m_batch
 
   return data_batch, label_batch
 
@@ -197,12 +175,12 @@ def select_roi_patches(data, label, mask, opt):
   x, y, z = data.shape[-3], data.shape[-2], data.shape[-1]
 
   data_batch = torch.zeros((opt.input_channels, patch_shape[0], patch_shape[1], patch_shape[2]))
-  label_batch = torch.zeros((opt.output_channels, patch_shape[0], patch_shape[1], patch_shape[2]))
+  label_batch = torch.zeros((1, patch_shape[0], patch_shape[1], patch_shape[2]))
 
   if opt.input_channels == 2:
-    c_x, c_y, c_z = get_label_centroid(mask)
+    c_x, c_y, c_z = get_roi_centroid(mask)
   else:  
-    c_x, c_y, c_z = get_label_centroid(label)
+    c_x, c_y, c_z = get_roi_centroid(label)
     
   l_x, r_x = get_extreme_coordinates(c_x, patch_shape[0], x)
   l_y, r_y = get_extreme_coordinates(c_y, patch_shape[1], y)
@@ -221,7 +199,7 @@ def select_roi_patches(data, label, mask, opt):
 
 def data_augmentation_batch(data_batch, label_batch, opt):
   """
-  With a probability of 50% perform elasic deformation
+  With a probability of 50% perform elastic deformation
   and with probability of 50% perform flip over x-axis.
   """
   # Define input subject.
@@ -293,6 +271,34 @@ def data_augmentation_batch(data_batch, label_batch, opt):
   return data_batch, label_batch
 
 
+def keep_only_largest_connected_component(seg):
+    """
+    Takes a binary 3D tensor and removes all contours that
+    include less voxels than the largest one.
+    """
+    # Compute connected components.
+    seg = seg.numpy().astype(np.uint8)
+    conn_comp = cc3d.connected_components(seg, connectivity=6)
+
+    # Count number of voxels of each component and find largest component.
+    unique, counts = np.unique(conn_comp, return_counts=True)
+
+    # Remove largest component, because it is background.
+    idx_largest = np.argmax(counts)
+    val_largest = unique[idx_largest]
+
+    counts = np.delete(counts, idx_largest)
+    unique = np.delete(unique, idx_largest)
+
+    idx_second_largest = np.argmax(counts)
+    val_second_largest = unique[idx_second_largest]
+
+    # Remove all smaller components.
+    out = np.zeros_like(conn_comp)
+    out = np.where(conn_comp == val_second_largest, 1, out)
+    return torch.ByteTensor(out.astype(np.uint8))
+
+
 ####################################################
 #-------------- TRAINING PARAMETERS ---------------#
 ####################################################
@@ -360,7 +366,7 @@ def set_loss_fn(opt):
         return BCE_Dice_Loss()
 
 ####################################################
-#-------------- VALIDATION METRICES ---------------#
+#-------------- VALIDATION METRICS ----------------#
 ####################################################
 
 def adjusted_rand_index(labels_true, labels_pred):
@@ -410,9 +416,9 @@ def icc(result, reference):
     return interclass_correlation(labels_true, labels_pred)      # Interclass correlation.
 
 # Compute validation losses.
-def compute_metrices(input, target, metrices, opt=None):
-
-    n_batches = target.shape[1]
+def compute_metrics(input, target, metrics, opt=None):
+    
+    n_batches = target.shape[0]
     
     for b in range(n_batches):
       i = input[b].squeeze(0).cpu().detach().numpy()
@@ -456,13 +462,13 @@ def compute_metrices(input, target, metrices, opt=None):
           m4 = ari(result=i, reference=t)                                           # Adjusted rand index/scrore.
   
       m1 = dc(result=i, reference=t)                                                 # Dice Coefficient.
-      metrices["DSC"].append(m1)
-      metrices["HSD"].append(m2)
-      metrices["ICC"].append(m3)
-      metrices["ARI"].append(m4)
-      metrices["ASSD"].append(m5)
+      metrics["DSC"].append(m1)
+      metrics["HSD"].append(m2)
+      metrics["ICC"].append(m3)
+      metrics["ARI"].append(m4)
+      metrics["ASSD"].append(m5)
 
-    return metrices
+    return metrics
 
 ###############################################################
 #---------------------- EXTRA FUNCTIONS ----------------------#

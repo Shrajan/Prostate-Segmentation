@@ -133,14 +133,13 @@ class UNet(nn.Module):
     """
     Classical 3D UNet.
     """
-    def __init__(self, opt):
+    def __init__(self, input_channels = 1, output_channels = 1, n_kernels = 32, dropout_rate=0.25):
         super(UNet, self).__init__()
         self.nonlin = nn.ReLU(inplace=True)
-        self.input_channels = opt.input_channels
-        self.output_channels = opt.output_channels
-        self.n_kernels = opt.n_kernels
-
-        self.dropout_rate = opt.dropout_rate
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.n_kernels = n_kernels
+        self.dropout_rate = dropout_rate
 
         self.enc0 = Encoder(in_channels=self.input_channels, mid_channels=self.n_kernels, out_channels=self.n_kernels*2, nonlin=self.nonlin, downconv=False, dropout_rate=self.dropout_rate)
         self.maxpool1 = nn.MaxPool3d(kernel_size=(2, 2, 2))
@@ -199,14 +198,14 @@ class UNet_UMP(nn.Module):
     """
     UNet with max pooling layers, instead convolution with stride 2.
     """
-    def __init__(self, opt):
+    def __init__(self, input_channels = 1, output_channels = 1, n_kernels = 32, dropout_rate=0.25):
         super(UNet_UMP, self).__init__()
         self.nonlin = nn.LeakyReLU(0.2)
-        self.input_channels = opt.input_channels
-        self.output_channels = opt.output_channels
-        self.n_kernels = opt.n_kernels
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.n_kernels = n_kernels
 
-        self.dropout_rate = opt.dropout_rate
+        self.dropout_rate = dropout_rate
 
         self.enc0 = Encoder(in_channels=self.input_channels, mid_channels=self.n_kernels, out_channels=self.n_kernels*2, nonlin=self.nonlin, downconv=False, dropout_rate=self.dropout_rate)
         self.enc1 = Encoder(in_channels=self.n_kernels*2, mid_channels=self.n_kernels*2, out_channels=self.n_kernels*4, nonlin=self.nonlin, downconv=True, dropout_rate=self.dropout_rate)
@@ -257,14 +256,14 @@ class Deeper_UNet_WMP(nn.Module):
     """
     Deeper version of UNet without Max Pooling.
     """
-    def __init__(self, opt):
+    def __init__(self, input_channels = 1, output_channels = 1, n_kernels = 32, dropout_rate=0.25):
         super(Deeper_UNet_WMP, self).__init__()
         self.nonlin = nn.LeakyReLU(0.2)
-        self.input_channels = opt.input_channels
-        self.output_channels = opt.output_channels
-        self.n_kernels = opt.n_kernels
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.n_kernels = n_kernels
 
-        self.dropout_rate = opt.dropout_rate
+        self.dropout_rate = dropout_rate
 
         self.enc0 = Encoder(in_channels=self.input_channels, mid_channels=self.n_kernels, out_channels=self.n_kernels*2, nonlin=self.nonlin, downconv=False, dropout_rate=self.dropout_rate)
         self.enc1 = Encoder(in_channels=self.n_kernels*2, mid_channels=self.n_kernels*2, out_channels=self.n_kernels*4, nonlin=self.nonlin, downconv=True, dropout_rate=self.dropout_rate)

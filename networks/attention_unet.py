@@ -344,13 +344,16 @@ class UnetConv3(nn.Module):
 
 class Attention_UNet(nn.Module):
 
-    def __init__(self, opt, is_deconv=True, nonlocal_mode='concatenation', attention_dsample=(2,2,2), is_batchnorm=True):
+    def __init__(self, input_channels = 1, output_channels = 1, n_kernels = 32, is_deconv = True, 
+                nonlocal_mode = 'concatenation', attention_dsample = (2,2,2), is_batchnorm = True):
         super(Attention_UNet, self).__init__()
+
+        # Define the class variables.
         self.is_deconv = is_deconv
-        self.input_channels = opt.input_channels
-        self.output_channels = opt.output_channels
+        self.input_channels = input_channels
+        self.output_channels = output_channels
         self.nonlocal_mode = nonlocal_mode
-        n_kernels = opt.n_kernels
+        n_kernels = n_kernels
         self.is_batchnorm = is_batchnorm
 
         filters = [n_kernels, n_kernels *2, n_kernels * 4, n_kernels * 8, n_kernels * 16]

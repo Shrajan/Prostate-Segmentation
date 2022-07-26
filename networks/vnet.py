@@ -188,13 +188,13 @@ class VNet(nn.Module):
     Implementations based on the Vnet paper: https://arxiv.org/abs/1606.04797
     """
 
-    def __init__(self, opt):
+    def __init__(self, input_channels = 1, output_channels = 1, n_kernels = 32, dropout_rate=0.25):
         super(VNet, self).__init__()
         self.elu = True
-        self.output_channels = opt.output_channels
-        self.n_kernels = opt.n_kernels
-        self.dropout_rate = opt.dropout_rate
-        self.in_channels = opt.input_channels
+        self.output_channels = output_channels
+        self.n_kernels = n_kernels
+        self.dropout_rate = dropout_rate
+        self.in_channels = input_channels
 
         self.in_tr = InputTransition(self.in_channels, elu=self.elu)
         self.down_tr32 = DownTransition_HWD(16, 2, self.elu)

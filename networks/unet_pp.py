@@ -48,12 +48,12 @@ class Conv_3x3(nn.Module):
 
 
 class UNet_Plus_Plus(nn.Module):
-    def __init__(self, opt, deep_supervision=False):
+    def __init__(self, input_channels = 1, output_channels = 1, n_kernels = 32, dropout_rate=0.25, deep_supervision=False):
         super().__init__()
-        self.input_channels = opt.input_channels
-        self.output_channels = opt.output_channels
-        self.n_kernels = opt.n_kernels
-        self.dropout_rate = opt.dropout_rate
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.n_kernels = n_kernels
+        self.dropout_rate = dropout_rate
         self.deep_supervision = deep_supervision
 
         filters = [self.n_kernels, self.n_kernels*2, self.n_kernels*4, self.n_kernels*8, self.n_kernels*16]

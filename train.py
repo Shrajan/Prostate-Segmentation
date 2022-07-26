@@ -16,12 +16,13 @@
     |    14 March 2021      |     Dejan Kostyszyn      |  Implemented necessary functions.   |
     |    18 April 2021      |     Shrajan Bhandary     |  Changed structure to object type.  |
     |    22 January 2022    |     Shrajan Bhandary     | Cleaned up stuff and added comments.|
+    |    26 July 2022       |     Shrajan Bhandary     |    Minor corrections and fixes.     |
     |----------------------------------------------------------------------------------------|
 '''
 
 # LIBRARY IMPORTS
-import dataloader as DL
-import torch, os, nrrd, time, csv, models, utils
+import dataloader as custom_DL
+import torch, os, nrrd, time, csv, models, utils, tqdm
 from options import Options
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -30,7 +31,7 @@ import numpy as np
 # IMPLEMENTATION
 
 class Trainer():
-  def __init__(self, opt=None, hyperparam_optimization=False):
+    def __init__(self, opt=None, hyperparam_optimization=False):
 
         print("Initializing...")
         self.start_time = time.time()
@@ -76,7 +77,9 @@ class Trainer():
         #------------------ DATA LOADING ------------------#
         ####################################################
 
-        self.train_dataset, self.val_dataset = DL.Dataset(self.opt, training=True), DL.Dataset(self.opt, training=False)
+        self.train_dataset = custom_DL.Dataset(self.opt, split_type="train")
+        self.val_dataset = custom_DL.Dataset(self.opt, split_type="val")
+        
         self.trainloader = DataLoader(
             self.train_dataset,
             batch_size=self.opt.n_batches,
@@ -102,12 +105,6 @@ class Trainer():
 
         self.model = models.get_model(opt=self.opt)
 
-        # Further training
-        if self.resume_train:
-            checkpoint = torch.load(os.path.join(self.results_path,'best_net.sausage'), map_location=self.device)
-            self.model.load_state_dict(checkpoint["model_state_dict"]) # Load the best weights
-        self.model.to(self.device)
-
         ####################################################
         #-------------- TRAINING PARAMETERS ---------------#
         ####################################################
@@ -116,192 +113,209 @@ class Trainer():
         self.optimizer = utils.set_optimizer(opt=self.opt, model_params=self.model.parameters())
 
         # Learning rate scheduler.
-        t_max = self.opt.training_epochs if not hyperparam_optimization else self.opt.max_budget
+        t_max = self.opt.training_epochs - self.opt.starting_epoch if not hyperparam_optimization else self.opt.max_budget
         self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=t_max, eta_min=0.000001)
 
         # Initialize loss functions.
         self.loss_func = utils.set_loss_fn(opt=self.opt)
 
-  ###############################################################
-  #------------------------- TRAINING --------------------------#
-  ###############################################################
-  def train_step(self):
-      """
-      Train the model on all training samples.
-      Returns:
-          train_losses: list of all computed training losses
-          train_dsc: list of all computed training DSCs
-      """
-      # List to store loss values and metrics generated per single batch.
-      train_losses  = []
-      train_metrics = {
-          "DSC": [],
-          "HSD": [],
-          "ICC": [],
-          "ARI": [],
-          "ASSD": [],
-      }
+        ####################################################
+        #---------------- LOAD STATE DICTS ----------------#
+        ####################################################
 
-      # Perform training by setting mode = Train
-      self.model.train()
+        # Further training
+        if self.resume_train:
+            checkpoint = torch.load(os.path.join(self.results_path,'best_net.sausage'), map_location=self.device)
+            self.model.load_state_dict(checkpoint["model_state_dict"]) # Load the best weights.
+            self.highestDSC = checkpoint["mean_val_DSC"] # Highest mean validation DSC.
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"]) # Load optimizer state.
+            self.lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"]) # Load scheduler state.
 
-      # Consider a single batch at a given time from the complete dataset.
-      for idx, (p_id, data, label, p_idx) in enumerate(self.trainloader):
+        # Move the model to the appropriate device.
+        self.model.to(self.device)
 
-          self.optimizer.zero_grad()                                                            # Clears old gradients from the pevious step.
-          data, label = data.to(self.device), label.to(self.device)                             # Pass data and label to the device.
-          out_M = self.model(data)                                                              # Feed the data into the model.
-          loss_M = self.loss_func(out_M, label)                                                 # Computes the loss of prediction with respect to the label.
-          train_losses.append(loss_M)                                                           # Save the batch-wise training loss.
-          loss_M.backward()                                                                     # Computes the derivative of the loss w.r.t. the parameters (or anything requiring gradients) using backpropagation.
-          self.optimizer.step()                                                                 # Use the optimizer to change the paramters based on their respective gradients.
-          train_metrics = utils.compute_metrices(torch.sigmoid(out_M), label, train_metrics, opt=self.opt)    # Calculate the performance metrices and save it in the dictionary.
+    ###############################################################
+    #------------------------- TRAINING --------------------------#
+    ###############################################################
+    def train_step(self):
+        """
+        Train the model on all training samples.
+        Returns:
+            train_losses: list of all computed training losses
+            train_dsc: list of all computed training DSCs
+        """
+        # List to store loss values and metrics generated per single batch.
+        train_losses  = []
+        train_metrics = {
+            "DSC": [],
+            "HSD": [],
+            "ICC": [],
+            "ARI": [],
+            "ASSD": [],
+        }
 
-      return train_losses, train_metrics
+        # Perform training by setting mode = Train
+        self.model.train()
 
-  ###############################################################
-  #------------------------- VALIDATION ------------------------#
-  ###############################################################
-  def val_step(self, epoch, save_freq=0):
-      """
-      Validating the trained model on all validation samples.
-      Returns:
-          val_losses: list of all computed validation losses
-          val_dsc: list of all computed validation DSCs
-      """
+        # Consider a single batch at a given time from the complete dataset.
+        for idx, (p_id, data, label) in enumerate(tqdm.tqdm(self.trainloader,desc="Training")):
 
-      # List to store loss values and metrics generated per single batch.
-      val_losses = []
-      val_metrics = {
-          "P_ID": [],
-          "DSC": [],
-          "HSD": [],
-          "ICC": [],
-          "ARI": [],
-          "ASSD": [],
-      }
+            self.optimizer.zero_grad()                                                            # Clears old gradients from the pevious step.
+            data, label = data.to(self.device), label.to(self.device)                             # Pass data and label to the device.
+            out_M = self.model(data)                                                              # Feed the data into the model.
+            loss_M = self.loss_func(out_M, label)                                                 # Computes the loss of prediction with respect to the label.
+            train_losses.append(loss_M)                                                           # Save the batch-wise training loss.
+            loss_M.backward()                                                                     # Computes the derivative of the loss w.r.t. the parameters (or anything requiring gradients) using backpropagation.
+            self.optimizer.step()                                                                 # Use the optimizer to change the paramters based on their respective gradients.
+            train_metrics = utils.compute_metrics(torch.sigmoid(out_M), label, train_metrics, opt=self.opt)    # Calculate the performance metrics and save it in the dictionary.
 
-      # Perform validation by setting mode = Eval
-      self.model.eval()
+        self.lr_scheduler.step()
+        return train_losses, train_metrics
 
-      # Make sure that the gradients will not be altered or calculated.
-      with torch.no_grad():
-          self.val_dataset.shuffle_patch_choice()
+    ###############################################################
+    #------------------------- VALIDATION ------------------------#
+    ###############################################################
+    def val_step(self, epoch, save_freq=0):
+        """
+        Validating the trained model on all validation samples.
+        Returns:
+            val_losses: list of all computed validation losses
+            val_dsc: list of all computed validation DSCs
+        """
 
-          # Consider a single batch at a given time from the complete dataset.
-          for idx, (p_id, data, label, p_idx) in enumerate(self.valloader):
+        # List to store loss values and metrics generated per single batch.
+        val_losses = []
+        val_metrics = {
+            "P_ID": [],
+            "DSC": [],
+            "HSD": [],
+            "ICC": [],
+            "ARI": [],
+            "ASSD": [],
+        }
 
-              data, label = data.to(self.device), label.to(self.device)                         # Pass data and label to the device.
-              out_M = self.model(data)                                                          # Feed the data into the model.
-              loss_M = self.loss_func(out_M, label)                                             # Calculate the loss function of the model prediction to the labelled ground truth.
-              val_losses.append(loss_M.detach())                                                # Save the batch-wise validation loss.
-              val_metrics = utils.compute_metrices(torch.sigmoid(out_M), label, val_metrics, opt=self.opt)    # Calculate the performance metrices and save it in the dictionary.
-              val_metrics["P_ID"].append(p_id)
-              # Save every nth epoch determined by save_frequency.
-              if save_freq > 0:
-                if epoch % save_freq == 0:
-                    out_M = torch.sigmoid(out_M)
-                    nrrd.write(self.prediction_path + "/" + p_id[0] + "_epoch_" + str(epoch) + "_prediction.nrrd", out_M.squeeze(0).squeeze(0).cpu().detach().numpy())
-                    nrrd.write(self.prediction_path + "/" + p_id[0] + "_epoch_" + str(epoch) + "_val_ct_patch.nrrd", data.squeeze(0).squeeze(0).cpu().detach().numpy())
-                    nrrd.write(self.prediction_path + "/" + p_id[0] + "_epoch_" + str(epoch) + "_val_gt_patch.nrrd", label.squeeze(0).squeeze(0).cpu().detach().numpy())
+        # Perform validation by setting mode = Eval
+        self.model.eval()
+
+        # Make sure that the gradients will not be altered or calculated.
+        with torch.no_grad():
+            self.val_dataset.shuffle_patch_choice()
+
+            # Consider a single batch at a given time from the complete dataset.
+            for idx, (p_id, data, label) in enumerate(tqdm.tqdm(self.valloader, desc="Validating")):
+
+                data, label = data.to(self.device), label.to(self.device)                         # Pass data and label to the device.
+                out_M = self.model(data)                                                          # Feed the data into the model.
+                loss_M = self.loss_func(out_M, label)                                             # Calculate the loss function of the model prediction to the labelled ground truth.
+                val_losses.append(loss_M.detach())                                                # Save the batch-wise validation loss.
+                val_metrics = utils.compute_metrics(torch.sigmoid(out_M), label, val_metrics, opt=self.opt)    # Calculate the performance metrics and save it in the dictionary.
+                val_metrics["P_ID"].append(p_id)
+                # Save every nth epoch determined by save_frequency.
+                if save_freq > 0:
+                    if epoch % save_freq == 0:
+                        out_M = torch.sigmoid(out_M)
+                        nrrd.write(self.prediction_path + "/" + p_id[0] + "_epoch_" + str(epoch) + "_prediction.nrrd", out_M.squeeze(0).squeeze(0).cpu().detach().numpy())
+                        nrrd.write(self.prediction_path + "/" + p_id[0] + "_epoch_" + str(epoch) + "_val_ct_patch.nrrd", data.squeeze(0).squeeze(0).cpu().detach().numpy())
+                        nrrd.write(self.prediction_path + "/" + p_id[0] + "_epoch_" + str(epoch) + "_val_gt_patch.nrrd", label.squeeze(0).squeeze(0).cpu().detach().numpy())
+                    
+        return val_losses, val_metrics
+
+    """
+    This method trains the network.
+    """
+    def train(self):
+
+        for epoch in range(self.opt.starting_epoch, self.opt.training_epochs):
+
+            # Print information
+            print("Epoch {}/{}".format(epoch+1, self.opt.training_epochs))
+            epoch_start_time = time.time()
+
+            # Training step
+            train_losses, train_metrics = self.train_step()
+
+            # Validation step
+            val_losses, val_metrics = self.val_step(epoch, save_freq= self.opt.save_freq)
+            
+            ###############################################################
+            #---------------------- SAVING RESULTS -----------------------#
+            ###############################################################
+
+            # Detailed training iteration results.
+            with open(self.results_path + "/training_iteration_results.csv", "a", newline="") as file:
+                writer = csv.writer(file, delimiter=",", quotechar='|', quoting=csv.QUOTE_MINIMAL)
+                for iters in range(len(train_losses)):
+                    writer.writerow([ epoch+1, iters+1, train_losses[iters].item(), train_metrics["DSC"][iters], train_metrics["HSD"][iters], \
+                                        train_metrics["ICC"][iters], train_metrics["ARI"][iters], train_metrics["ASSD"][iters]  ])
+            
+            # Detailed validation iteration results.
+            with open(self.results_path + "/validation_iteration_results.csv", "a", newline="") as file:
+                writer = csv.writer(file, delimiter=",", quotechar='|', quoting=csv.QUOTE_MINIMAL)
+                for iters in range(len(val_losses)):
+                    writer.writerow([ epoch+1, val_metrics["P_ID"][iters], val_losses[iters].item(), val_metrics["DSC"][iters], val_metrics["HSD"][iters], \
+                                        val_metrics["ICC"][iters], val_metrics["ARI"][iters], val_metrics["ASSD"][iters]  ])
+
+            result = dict()
+
+            # Training results
+            result['train_loss'] = torch.stack(train_losses).mean().item()
+            result['train_dsc'] = np.mean(train_metrics["DSC"])
+            result['train_hsd'] = np.mean(train_metrics["HSD"])
+            result['train_icc'] = np.mean(train_metrics["ICC"])
+            result['train_ari'] = np.mean(train_metrics["ARI"]) 
+            result['train_assd'] = np.mean(train_metrics["ASSD"])         
+
+            # Validation results          
+            result['val_loss'] = torch.stack(val_losses).mean().item()
+            result['val_dsc'] = np.mean(val_metrics["DSC"])
+            result['val_hsd'] = np.mean(val_metrics["HSD"])
+            result['val_icc'] = np.mean(val_metrics["ICC"])
+            result['val_ari'] = np.mean(val_metrics["ARI"])  
+            result['val_assd'] = np.mean(val_metrics["ASSD"])    
+
+            
+            with open(self.results_path + "/history.csv", "a", newline="") as file:
+                writer = csv.writer(file, delimiter=",", quotechar='|', quoting=csv.QUOTE_MINIMAL)
+                writer.writerow([ epoch+1, result["train_loss"], result["train_dsc"], result["train_hsd"], result["train_icc"], result["train_ari"], result["train_assd"],\
+                                        result["val_loss"], result["val_dsc"], result["val_hsd"], result["val_icc"], result["val_ari"], result["val_assd"] ])
+            
+            # Save the model that has the highest mean validation DSC.
+            currentDSC = result['val_dsc']
+            if currentDSC > self.highestDSC:
+                self.highestDSC = currentDSC
+                bestEpoch = epoch+1
+                torch.save({
+                "epoch": bestEpoch,
+                "mean_val_DSC": self.highestDSC,
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler_state_dict": self.lr_scheduler.state_dict(),
+                "normalize": self.opt.normalize,
+                "patch_shape": self.opt.patch_shape,
+                "n_kernels": self.opt.n_kernels,
+                "no_clip": self.opt.no_clip,
+                "voxel_spacing": self.train_dataset.voxel_spacing,
+                "input_channels": self.opt.input_channels,
+                "output_channels": self.opt.output_channels,
+                "no_shuffle": self.opt.no_shuffle,
+                "seed": self.opt.seed,
+                "model_name": self.opt.model_name
+                }, os.path.join(self.results_path, "best_net.sausage"))
+            
+            # Calculate the time required for each epoch.
+            epoch_end_time = time.time()
+            time_per_epoch = epoch_end_time - epoch_start_time
+
+            # Print the results after each epoch.
+            print("Finished epoch {} in {}s with results - train_loss: {:.4f}, train_dsc: {:.4f}, val_loss: {:.4f}, val_dsc: {:.4f} \n".format(
+            epoch+1, int(time_per_epoch), result['train_loss'], result['train_dsc'], result['val_loss'], result['val_dsc']))
+
+        # Save the complete model after training.
+        torch.save(self.model,os.path.join(self.results_path, 'complete_model.pt'))
         
-      self.lr_scheduler.step()
-      
-      return val_losses, val_metrics
-
-  """
-  This method trains the network.
-  """
-  def train(self):
-
-      for epoch in range(self.opt.starting_epoch, self.opt.training_epochs):
-
-          # Print information
-          print("Epoch {}/{}".format(epoch+1, self.opt.training_epochs))
-          epoch_start_time = time.time()
-
-          # Training step
-          train_losses, train_metrics = self.train_step()
-
-          # Validation step
-          val_losses, val_metrics = self.val_step(epoch, save_freq= self.opt.save_freq)
-          
-          ###############################################################
-          #---------------------- SAVING RESULTS -----------------------#
-          ###############################################################
-
-          # Detailed training iteration results.
-          with open(self.results_path + "/training_iteration_results.csv", "a", newline="") as file:
-              writer = csv.writer(file, delimiter=",", quotechar='|', quoting=csv.QUOTE_MINIMAL)
-              for iters in range(len(train_losses)):
-                  writer.writerow([ epoch+1, iters+1, train_losses[iters].item(), train_metrics["DSC"][iters], train_metrics["HSD"][iters], \
-                                    train_metrics["ICC"][iters], train_metrics["ARI"][iters], train_metrics["ASSD"][iters]  ])
-          
-          # Detailed validation iteration results.
-          with open(self.results_path + "/validation_iteration_results.csv", "a", newline="") as file:
-              writer = csv.writer(file, delimiter=",", quotechar='|', quoting=csv.QUOTE_MINIMAL)
-              for iters in range(len(val_losses)):
-                  writer.writerow([ epoch+1, val_metrics["P_ID"][iters], val_losses[iters].item(), val_metrics["DSC"][iters], val_metrics["HSD"][iters], \
-                                    val_metrics["ICC"][iters], val_metrics["ARI"][iters], val_metrics["ASSD"][iters]  ])
-
-          result = dict()
-
-          # Training results
-          result['train_loss'] = torch.stack(train_losses).mean().item()
-          result['train_dsc'] = np.mean(train_metrics["DSC"])
-          result['train_hsd'] = np.mean(train_metrics["HSD"])
-          result['train_icc'] = np.mean(train_metrics["ICC"])
-          result['train_ari'] = np.mean(train_metrics["ARI"]) 
-          result['train_assd'] = np.mean(train_metrics["ASSD"])         
-
-          # Validation results          
-          result['val_loss'] = torch.stack(val_losses).mean().item()
-          result['val_dsc'] = np.mean(val_metrics["DSC"])
-          result['val_hsd'] = np.mean(val_metrics["HSD"])
-          result['val_icc'] = np.mean(val_metrics["ICC"])
-          result['val_ari'] = np.mean(val_metrics["ARI"])  
-          result['val_assd'] = np.mean(val_metrics["ASSD"])    
-
-          with open(self.results_path + "/history.csv", "a", newline="") as file:
-              writer = csv.writer(file, delimiter=",", quotechar='|', quoting=csv.QUOTE_MINIMAL)
-              writer.writerow([ epoch+1, result["train_loss"], result["train_dsc"], result["train_hsd"], result["train_icc"], result["train_ari"], result["train_assd"],\
-                                    result["val_loss"], result["val_dsc"], result["val_hsd"], result["val_icc"], result["val_ari"], result["val_assd"] ])
-          
-          # Save the model that has the highest mean validation DSC.
-          currentDSC = result['val_dsc']
-          if currentDSC > self.highestDSC:
-              self.highestDSC = currentDSC
-              bestEpoch = epoch+1
-              torch.save({
-              "epoch": bestEpoch,
-              "mean_val_DSC": self.highestDSC,
-              "model_state_dict": self.model.state_dict(),
-              "optimizer_state_dict": self.optimizer.state_dict(),
-              "normalize": self.opt.normalize,
-              "patch_shape": self.opt.patch_shape,
-              "n_kernels": self.opt.n_kernels,
-              "no_clip": self.opt.no_clip,
-              "voxel_spacing": self.train_dataset.voxel_spacing,
-              "input_channels": self.opt.input_channels,
-              "output_channels": self.opt.output_channels,
-              "no_shuffle": self.opt.no_shuffle,
-              "model_name": self.opt.model_name
-              }, os.path.join(self.results_path, "best_net.sausage"))
-          
-          # Calculate the time required for each epoch.
-          epoch_end_time = time.time()
-          time_per_epoch = epoch_end_time - epoch_start_time
-
-          # Print the results after each epoch.
-          print("Finished epoch {} in {}s with results - train_loss: {:.4f}, train_dsc: {:.4f}, val_loss: {:.4f}, val_dsc: {:.4f} \n".format(
-          epoch+1, int(time_per_epoch), result['train_loss'], result['train_dsc'], result['val_loss'], result['val_dsc']))
-
-      # Save the complete model after training.
-      torch.save(self.model,os.path.join(self.results_path, 'complete_model.pt'))
-      
-      # Calculate the time required for full training.
-      self.end_time = time.time()
-      print("Completed training and validation in {}s".format(self.end_time - self.start_time))
+        # Calculate the time required for full training.
+        self.end_time = time.time()
+        print("Completed training and validation in {}s".format(self.end_time - self.start_time))
 
 if __name__ == "__main__":
     trainer = Trainer()
