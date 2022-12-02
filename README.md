@@ -27,6 +27,7 @@ The [networks](networks) sub-directory consists of the scripts for the following
 ### 1.4. Executable Scripts ###
 * [hyperparam_optimization.py](hyperparam_optimization.py) - implementation of Hpbandster to retrieve best training parameters.
 * [train.py](train.py) - training program.
+* [collect_cv_files.py](collect_cv_files.py) - collates all the cross-validation samples.
 * [test.py](test.py) - predicts the segmentation for the test dataset, can also generate noisy data to check robustness.
 
 ## 2. Usage ##
@@ -88,7 +89,7 @@ pip install -r Requirements.txt
     |       ...
     |   ├──dataset_info.json
 ``` 
-* However, if you want to train with the full dataset and test on external datasets, then it is mandatory to have separate sub-folders. In this case, the training files have to be resampled to the target spacings. However, the test samples can (recommended) be in their original spacings, and the format could be either `.nii.gz` or `.nrrd`. their  An example of the required structure of the data folder is shown below: 
+* However, if you want to train with the full dataset and test on external datasets, then it is mandatory to have separate sub-folders. In this case, the training files have to be resampled to the target spacings. However, the test samples can (recommended) be in their original spacings, and the format could be either `.nii.gz` or `.nrrd`. An example of the required structure of the data folder is shown below: 
 ```
     dst_folder/
     ├── train/
@@ -140,7 +141,7 @@ pip install -r Requirements.txt
 [--device_id DEVICE_ID]                    The ID of the GPU to be used. If no GPU, then CPU will be used. [Default: 0]
 [--k_fold K_FOLD]                          Choose between no cross validation (ensure separate folders for train and test), or 5-fold cross validation or 8-fold cross validation. Choices = [0,5,8]. [Default: 0].
 [--fold FOLD]                              Select the fold index for the chosen cross validation. Choices = [0,1,2,3,4,5,6,7]. [Default: 0].
-[--clip CLIP]                        If this is used, then the volumes will be clipped to 5 and 95 percentiles.
+[--clip CLIP]                              If this is used, then the volumes will be clipped to 5 and 95 percentiles.
 ```
 * Models list
  ```
@@ -179,7 +180,7 @@ python hyperparam_optimization.py --data_root data/train_and_test --model_name u
 * Training from scratch can be done using [train.py](train.py) script. 
 * If you completed a hyperparameter search, you may change the following arguments for training:
 ```
---lr LR]                                Learning rate for the optimizer. [Default: 0.0001] 
+--lr LR]                                 Learning rate for the optimizer. [Default: 0.0001] 
 [--beta1 BETA1]                          Beta1 for Adam solver. [Default: 0.9] 
 [--loss_fn LOSS_FN]                      The loss function to calculate the error. [Default: binary_cross_entropy]
 [--dropout_rate DROPOUT_RATE]            The probability of dropping nodes in the layers. [Default: 0.25]
