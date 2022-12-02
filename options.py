@@ -39,7 +39,7 @@ class Options():
         parser.add_argument('--output_channels', type=int, default=1, required=False, help='Number of channels in the output label.')
         parser.add_argument('--voxel_spacing', type=float, nargs=3, default=(0.781, 0.781, 3), required=False, help='New voxel spacing for data.')
         parser.add_argument('--img_mod', type=str, default='MR', choices=["CT", "MR"], required=False, help='Image modality.')
-        parser.add_argument('--seed', type=int, default=2021, required=False, help='Seed for deterministic training.')
+        parser.add_argument('--seed', type=int, default=2022, required=False, help='Seed for deterministic training.')
 
         # Data handling and processing
         parser.add_argument('--n_batches', type=int, default=2, required=False, help='Number of batches sampled for training.')
@@ -49,7 +49,7 @@ class Options():
         parser.add_argument('--margin', type=int, default=0, required=False, help='Margin for patch sampling so that less information is lost during augmentation. Must be even number.')
         parser.add_argument('--no_augmentation', action='store_true', required=False, help='Turn off data augmentation during training.')
         parser.add_argument('--normalize', type=str, default='local', required=False, help='Choose type of normalization {None, local, global, -11}.')
-        parser.add_argument('--no_clip', action='store_true', required=False, help='If set, data will not be clipped to 5 and 95 percentiles.')
+        parser.add_argument('--clip', action='store_true', required=False, help='If set, data will be clipped to 5 and 95 percentiles.')
         parser.add_argument('--switch', action='store_true', required=False, help='If set, perform normalization first and then augmentation. If not set, perform augmentation first and then normalization.')
         parser.add_argument('--k_fold', type=int, default=0, required=True, choices = [0,5,8], help='Choose between no cross validation (ensure separate folders for train and test), or 5-fold cross validation or 8-fold cross validation. ')
         parser.add_argument('--fold', type=int, default=0, required=False, choices = [0,1,2,3,4,5,6,7], help='Select the fold index for k-fold cross validation. ')
@@ -60,9 +60,9 @@ class Options():
         parser.add_argument('--model_name', type=str, default='unet', required=False, choices=allModels, help='Select model from the list.')
         parser.add_argument('--n_kernels', type=int, default=32, required=False, help='Number of kernels for the fist Conv layer of Discriminator. Following kernels are multiplicatives.')
         parser.add_argument('--eps', type=float, default=1e-07, required=False, help='Epsilon for Adam solver.')
-        parser.add_argument('--weight_decay', type=float, default=0.0, required=False, help='Weight decay for Adam solver.')
+        parser.add_argument('--weight_decay', type=float, default=1e-05, required=False, help='Weight decay for Adam solver.')
         parser.add_argument('--beta2', type=float, default=0.999, required=False, help='Beta2 for Adam solver.')
-        parser.add_argument('--loss_fn', type=str, default='bce_dice_loss', required=False, choices=["binary_cross_entropy", "dice", "bce_dice_loss"], help='Choose loss function.')
+        parser.add_argument('--loss_fn', type=str, default='bce_dice_loss', required=False, choices=["ce_dice_loss","ce_loss","binary_cross_entropy", "dice", "bce_dice_loss"], help='Choose loss function.')
         parser.add_argument('--optimizer', type=str, default='adam', required=False, help='Choose optimizer {adam, adamw, adamax, sgd}.')
 
         # Paths
@@ -92,11 +92,12 @@ class Options():
         ##### Additional options to be used when doing only training ##########
         #######################################################################
         parser.add_argument('--training_epochs', type=int, default=500, required=False, help='Number of training epochs.')
-        parser.add_argument('--starting_epoch', type=int, default=0, required=False, help='Epoch to continue training from.')
+        parser.add_argument('--starting_epoch', type=int, default=1, required=False, help='Epoch to continue training from.')
         parser.add_argument('--resume_train', action='store_true', required=False, help='Use this with train.py file. If set, the training will resume from the last saved epoch.')
+        parser.add_argument('--load_saved_dicts', action='store_true', required=False, help='Use this with train.py file. If set, previous state dicts will be reused.')
         parser.add_argument('--save_freq', type=int, default=0, required=False, help='Saves all validation samples in the predictions folder after certain epcohs have elapsed. save_freq = 0: no saving, save_freq > 0: saving')
         parser.add_argument('--beta1', type=float, default=0.9, required=False, help='Beta1 for Adam solver.')
-        parser.add_argument('--lr', type=float, default=1e-4, required=False, help="Learning rate for model's Adam solver.")
+        parser.add_argument('--lr', type=float, default=1e-2, required=False, help="Learning rate for model's Adam solver.")
         parser.add_argument('--dropout_rate', type=float, default=0.5, required=False, help='Dropout rate for model.')
         
         return parser
@@ -148,4 +149,3 @@ class Options():
         msg = self.print_options(opt)
         self.save_options(msg, opt)
         return self.opt
-

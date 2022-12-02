@@ -15,327 +15,267 @@
     |    14 March 2021      |     Dejan Kostyszyn      |  Implemented necessary functions.   |
     |    20 April 2021      |     Shrajan Bhandary     |   Added postprocessing and noise.   |
     |    22 January 2022    |     Shrajan Bhandary     | Cleaned up stuff and added comments.|
-    |    26 July 2022       |     Shrajan Bhandary     |      Removed unnecessary stuff.     |
     |----------------------------------------------------------------------------------------|
 '''
 
 # LIBRARY IMPORTS
 import numpy as np
-from pydantic import NoneIsAllowedError
-import torch, os, time, csv, argparse, tqdm, utils, json
+import torch, os, time, models, argparse, nrrd, utils, json 
 import SimpleITK as sitk
-from torch.utils.data import DataLoader
-from models import get_model
-from natsort import natsorted
-from collections import OrderedDict
 import torchio as tio
-torch.manual_seed(2021)
+from batchgenerators.utilities.file_and_folder_operations import *
+from monai.inferers import sliding_window_inference
 from pre_processing.resampler_utils import resample_3D_image
-import dataloader as custom_DL 
+
+torch.manual_seed(2021)
+torch.cuda.empty_cache()
 
 # IMPLEMENTATION
 
-def select_noise(opt="none"):
+class Predictor():
+    def __init__(self, predictor_options=None):
 
-    # Create noise pipeline.
-    if opt.noise == "none":
-        noise = None
-    elif opt.noise == "random":
-        noise = tio.transforms.RandomNoise(std=opt.random_std)
-    elif opt.noise == "motion":
-        noise = tio.transforms.RandomMotion(num_transforms=opt.motion_transforms)
-    elif opt.noise == "blur":
-        noise = tio.transforms.RandomBlur(std=opt.blur_std)
+        print("Initializing...")
+        self.start_time = time.time()
 
-    return noise
+        # Get the user options for the test prediction.
+        self.predictor_options = predictor_options
 
-def get_train_options(opt=None, model_checkpoint=None):
-    opt.normalize = model_checkpoint["normalize"]
-    opt.patch_shape = model_checkpoint["patch_shape"]
-    opt.n_kernels = model_checkpoint["n_kernels"]
-    opt.no_clip = model_checkpoint["no_clip"]
-    opt.seed = model_checkpoint["seed"]
-    opt.model_name = model_checkpoint["model_name"]
-    opt.voxel_spacing = model_checkpoint["voxel_spacing"]
-    opt.input_channels = model_checkpoint["input_channels"]
-    opt.output_channels = model_checkpoint["output_channels"]
-    opt.no_shuffle = model_checkpoint["no_shuffle"]
-    opt.dropout_rate = 0.0 # This is just a formality for model declaration.
+        # Location that has saved training experiment.
+        self.exp_path = self.predictor_options.exp_path
 
-    # Write options into file.
-    with open(os.path.join(opt.results_path, "test_options.txt"), "w") as f:
-        f.write("opt.normalize = " + str(opt.normalize) + "\n")
-        f.write("opt.patch_shape = " + str(opt.patch_shape) + "\n")
-        f.write("opt.n_kernels = " + str(opt.n_kernels) + "\n")
-        f.write("opt.no_clip = " + str(opt.no_clip) + "\n")
-        f.write("opt.voxel_spacing = " + str(opt.voxel_spacing) + "\n")
-        f.write("opt.trained_model_path = " + str(opt.trained_model_path) + "\n")
-        f.write("opt.divisor = " + str(opt.divisor) + "\n")
-        f.write("opt.results_path = " + str(opt.results_path) + "\n")
-        f.write("opt.data_root = " + str(opt.data_root) + "\n")
-        f.write("opt.model_name = " + str(opt.model_name) + "\n")
-        f.write("opt.fold = " + str(opt.fold) + "\n")
-        f.write("opt.k_fold = " + str(opt.k_fold) + "\n")
-        f.write("opt.seed = " + str(opt.seed) + "\n")
+        # Location to save the predictions.
+        self.test_results_path = self.predictor_options.test_results_path
 
-    return opt
+        # Set the hardware device to run the model.
+        device_id = 'cuda:' + str(self.predictor_options.device_id)
+        self.device = torch.device(device_id if torch.cuda.is_available() else 'cpu')
 
-def write_final_results(opt, test_metrics, overall_seg_time, overall_time):
-    # Write final results into file.
-    with open(os.path.join(opt.results_path, "test_results.csv"), 'a', newline='') as csvfile:
-        writer = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-        writer.writerow(["Mean",
-                    np.mean(test_metrics["DSC"]),
-                    np.mean(test_metrics["HSD"]),
-                    np.mean(test_metrics["ICC"]),
-                    np.mean(test_metrics["ARI"]),
-                    np.mean(test_metrics["ASSD"]),
-                    np.mean(overall_seg_time),
-                    np.mean(overall_time)])
-        writer.writerow(["Median",
-                    np.median(test_metrics["DSC"]),
-                    np.median(test_metrics["HSD"]),
-                    np.median(test_metrics["ICC"]),
-                    np.median(test_metrics["ARI"]),
-                    np.median(test_metrics["ASSD"]),
-                    np.median(overall_seg_time),
-                    np.median(overall_time)])
-        writer.writerow(["Min",
-                    np.min(test_metrics["DSC"]),
-                    np.min(test_metrics["HSD"]),
-                    np.min(test_metrics["ICC"]),
-                    np.min(test_metrics["ARI"]),
-                    np.min(test_metrics["ASSD"]),
-                    np.min(overall_seg_time),
-                    np.min(overall_time)])
-        writer.writerow(["Max",
-                    np.max(test_metrics["DSC"]),
-                    np.max(test_metrics["HSD"]),
-                    np.max(test_metrics["ICC"]),
-                    np.max(test_metrics["ARI"]),
-                    np.max(test_metrics["ASSD"]),
-                    np.max(overall_seg_time),
-                    np.max(overall_time)])
-        writer.writerow(["Standard deviation",
-                    np.std(test_metrics["DSC"]),
-                    np.std(test_metrics["HSD"]),
-                    np.std(test_metrics["ICC"]),
-                    np.std(test_metrics["ARI"]),
-                    np.std(test_metrics["ASSD"]),
-                    np.std(overall_seg_time),
-                    np.std(overall_time)])
+        # Set the location of the test data.
+        self.data_root = self.predictor_options.data_root
 
-def test(opt):
-    
-    # Create results files.
-    if not os.path.exists(opt.results_path):
-        os.makedirs(opt.results_path)
+        # Get the number of folds.
+        self.k_fold = self.predictor_options.k_fold
 
-    with open(os.path.join(opt.results_path, "test_results_detailed.csv"), 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-        writer.writerow(["Patient", "DSC", "HSD", "ICC", "ARI", "ASSD", "Comp. time (s)", "Comp. time total (s)"])
-    
-    with open(os.path.join(opt.results_path, "test_results.csv"), 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-        writer.writerow(["", "DSC", "HSD", "ICC", "ARI", "ASSD", "Comp. time (s)", "Comp. time total (s)"])
+        # Get the names of the volumes to the tested.
+        self.test_files = self.get_test_file_names(data_root=self.data_root)
 
-    # Load information about trained model from saved model.
-    device_id = "cuda:" + str(opt.device_id)
-    device = torch.device(device_id if torch.cuda.is_available() else "cpu")
-    print("Using device : {}".format(device))
+        # Load the checkpoint for fold=0.
+        self.fold_0_checkpoint = torch.load(os.path.join(self.exp_path, "fold_0",'best_net.sausage'), 
+                                     map_location=self.device)
 
-    checkpoint = torch.load(os.path.join(opt.trained_model_path), map_location=device)
+        # Update the options Namespace to the latest information.
+        self.predictor_options = self.get_train_options(opt=self.predictor_options, 
+                                                        model_checkpoint=self.fold_0_checkpoint)
 
-    opt = get_train_options(opt=opt, model_checkpoint=checkpoint)
+        # Get the model from the list of networks.
+        self.model = models.get_model(opt=self.predictor_options)
 
-    dataset = custom_DL.Dataset(opt=opt, split_type="test")
-    dataset_info = dataset.get_dataset_info()
+        # Move the model to the appropriate device.
+        self.model.to(self.device)
+        
+        # Set the current_checkpoint.
+        self.current_checkpoint = self.fold_0_checkpoint
 
-    # Load trained model.
-    print("Found model that was trained for {} epochs with highest DSC {}, {} normalization, patch shape {} and no_clip = {}. Loading... ".
-            format(checkpoint["epoch"], checkpoint["mean_val_DSC"], checkpoint["normalize"], checkpoint["patch_shape"], opt.no_clip), end="")
-    segM = get_model(opt)
-    segM.load_state_dict(checkpoint["model_state_dict"])
-    segM = segM.to(device)
-    segM.eval()
+    def get_test_file_names(self, data_root):
+        #test_files = subfiles(data_root, suffix=".mhd")
+        test_files = os.listdir(data_root)
+        test_files.sort()
+        return test_files
 
-    dataloader = DataLoader(dataset,
-                            batch_size=1,
-                            shuffle=False,
-                            num_workers=0,
-                            pin_memory=True)
+    def get_volume_array_and_info(self, file_location=None):
+        old_data_image = sitk.ReadImage(file_location)
 
-    noise = select_noise(opt=opt)
+        # Resample if necessary.
+        if old_data_image.GetSpacing() != self.predictor_options.voxel_spacing:
+            new_spacing = self.predictor_options.voxel_spacing
+            new_data_image = resample_3D_image(sitkImage=old_data_image, newSpacing=new_spacing,
+                        interpolation="BSpline", change_spacing=True, change_direction=False)
+        else:
+            new_data_image = old_data_image
 
-    patch_shape = opt.patch_shape
-    test_metrics = {"DSC":[], "HSD":[], "ICC":[], "ARI":[], "ASSD":[] }
-    overall_seg_time = []
-    overall_time = []
+        new_data_array = sitk.GetArrayFromImage(new_data_image).transpose(2, 1, 0)
 
-    predictions_path = os.path.join(opt.results_path,'predictions')
-    if not os.path.exists(predictions_path):
-        os.makedirs(predictions_path)
+        new_data_info = {"spacing": new_data_image.GetSpacing(),
+                         "direction": new_data_image.GetDirection(),
+                         "origin": new_data_image.GetOrigin(),
+                        }
 
-    postprocessed_path = os.path.join(opt.results_path,"predictions_postprocessed")
-    if not os.path.exists(postprocessed_path):
-        os.makedirs(postprocessed_path)
+        return new_data_array, new_data_info
 
-    with torch.no_grad():
-        for p_idx, Dict in enumerate(dataloader):
-            start_time = time.time()
-            p_id, data, label = Dict["p_id"][0], Dict["data"], Dict["label"]
-            
-            print("\nPredicting prostate for patient: ", p_id)
-            
-            if noise != None:
-                data = noise(data) 
+    def get_train_options(self, opt=None, model_checkpoint=None):
+        opt.normalize = model_checkpoint["normalize"]
+        opt.patch_shape = model_checkpoint["patch_shape"]
+        opt.n_kernels = model_checkpoint["n_kernels"]
+        opt.clip = model_checkpoint["clip"]
+        opt.seed = model_checkpoint["seed"]
+        opt.model_name = model_checkpoint["model_name"]
+        opt.voxel_spacing = model_checkpoint["voxel_spacing"]
+        opt.input_channels = model_checkpoint["input_channels"]
+        opt.output_channels = model_checkpoint["output_channels"]
+        opt.no_shuffle = model_checkpoint["no_shuffle"]
+        opt.dropout_rate = 0.0 # This is just a formality for model declaration.
 
-            # Create results folder.
-            res_path = os.path.join(predictions_path, p_id)
-            if not os.path.exists(res_path):
-                os.makedirs(res_path)
+        print("Found model: {} that was on volumes with voxel spacing:{} and patch size: {}".
+            format(opt.model_name, opt.voxel_spacing, opt.patch_shape))
+        return opt
 
-            start_seg = time.time()
-            result_array = torch.zeros_like(data, dtype=float).squeeze(0).squeeze(0)
-            counter = torch.zeros_like(result_array)
-            divisor = opt.divisor
-            
-            for x in tqdm.tqdm(range(0, data.shape[-3] - (patch_shape[0] - patch_shape[0] // divisor),
-                           patch_shape[0] // divisor), desc="Sliding window inference"):
-                for y in range(0, data.shape[-2] - (patch_shape[1] - patch_shape[1] // divisor),
-                               patch_shape[1] // divisor):
-                    for z in range(0, data.shape[-1] - (patch_shape[2] - patch_shape[2] // divisor),
-                                   patch_shape[2] // divisor):
+    def save_test_post_processed(self, predicted_array=None, orig_data_path=None, save_location=None,
+                                 temp_save_location=None, data_info=None):
 
-                        x = min(x, data.shape[-3] - patch_shape[0])
-                        y = min(y, data.shape[-2] - patch_shape[1])
-                        z = min(z, data.shape[-1] - patch_shape[2])
+        # Get the name of the original volume.
+        orig_data_name = os.path.split(orig_data_path)[-1]
 
-                        # Crop data.
-                        crop = data[..., x:x + patch_shape[0], y:y + patch_shape[1], z:z + patch_shape[2]]
-                        
-                        # Normalization.
-                        crop = utils.normalize(crop, opt)
+        ################################################################################################
+        # Save the resampled predicted image.
+        ################################################################################################
+        predicted_image = sitk.GetImageFromArray(predicted_array.transpose(2,1,0))
 
-                        # Prediction.
-                        outM_array = (segM(crop.unsqueeze(0).to(device)).squeeze(0).squeeze(0)).cpu()
-                        outM_array = torch.sigmoid(outM_array)
-                        outM_array = torch.where(outM_array < 0.5, torch.tensor(0), torch.tensor(1))
-                        result_array[x:x + patch_shape[0], y:y + patch_shape[1], z:z + patch_shape[2]] += outM_array
-                        counter[x:x + patch_shape[0], y:y + patch_shape[1], z:z + patch_shape[2]] += 1
+        # Set other image characteristics.
+        predicted_image.SetOrigin(data_info["origin"])
+        predicted_image.SetSpacing(data_info["spacing"])
+        predicted_image.SetDirection(data_info["direction"])
 
-    
-            seg_time = time.time() - start_seg
-            overall_seg_time.append(seg_time)
-            
-            # Take a threshold to make it binary.
-            result_no_threshold = result_array.div(counter)
-            result_array = torch.where(result_no_threshold >= torch.tensor(0.5), torch.tensor(1), torch.tensor(0))
+        # Make the predictions folder is it doesn't exit.
+        if not os.path.exists(temp_save_location):
+            os.mkdir(temp_save_location) 
+        
+        # Write the image to the disk.
+        sitk.WriteImage(predicted_image, os.path.join(temp_save_location, orig_data_name))
 
-            # Find connected components and only keep largest.
-            try:
-                result_array = utils.keep_only_largest_connected_component(result_array)
+        ################################################################################################
+        # Save the predicted image in original format.
+        ################################################################################################
 
-                # Find centroid of segmentation.
-                centroid = utils.get_roi_centroid(result_array)
+        # Convert to torch to add an axis.
+        predicted_array = np.expand_dims(predicted_array, axis=0)
 
-                # Select patch with centroid as centroid of patch.
-                x = min(max(0, centroid[0] - patch_shape[0]//2), data.shape[-3] - patch_shape[0])
-                y = min(max(0, centroid[1] - patch_shape[1]//2), data.shape[-2] - patch_shape[1])
-                z = min(max(0, centroid[2] - patch_shape[2]//2), data.shape[-1] - patch_shape[2])
+        # Get the original data.
+        orig_data_image = sitk.ReadImage(orig_data_path)
+        
 
-                # Create crop with zeros in case that dimension of input image is smaller than path shape.
-                crop = data[..., x:x+patch_shape[0], y:y+patch_shape[1], z:z+patch_shape[2]].unsqueeze(0).to(device)
-                crop = utils.normalize(crop, opt)
+        # Resample the predicted image.
+        resample_transform = tio.transforms.Resample(target = orig_data_path, label_interpolation = 'nearest')
+        #resample_transform = tio.Resample(target = orig_data_image.GetSpacing(), label_interpolation = 'nearest')
+        resampled_pred_image = resample_transform(tio.Image(os.path.join(temp_save_location, orig_data_name), 
+                                                  type=tio.LABEL),
+                                                  )
 
-                # Feed only important patch into generator.
-                outM_array = segM(crop).squeeze(0).squeeze(0).cpu().detach()
-                outM_array = torch.sigmoid(outM_array).numpy()
-                outM_array_thres = np.where(outM_array < 0.5, 0, 1)
+        # Convert torch image to numpy.
+        orig_predt_array = resampled_pred_image["data"][0].numpy().astype(np.uint8)
+        
+        # Get the largest connected component (non-background) from the predicted image.
+        orig_predt_array = utils.keep_only_largest_connected_component(orig_predt_array)
 
-                result_array = torch.zeros_like(data.squeeze(0), dtype=torch.int8).numpy()
-                result_array[x:x+patch_shape[0], y:y+patch_shape[1], z:z+patch_shape[2]] = outM_array_thres
+        orig_predt_array = orig_predt_array.transpose(2,1,0)
 
-            except:
-                # If nothing was contoured during sliding window.
-                result_array = torch.zeros_like(data.squeeze(0), dtype=torch.int8).numpy()
+        # Get image from array.
+        predicted_image = sitk.GetImageFromArray(orig_predt_array)
 
-            # Save the predicted image.
-            result_array = result_array.transpose(2,1,0)
-            predicted_image = sitk.GetImageFromArray(result_array)
+        # Set other image characteristics.
+        predicted_image.SetOrigin(orig_data_image.GetOrigin())
+        predicted_image.SetSpacing(orig_data_image.GetSpacing())
+        predicted_image.SetDirection(orig_data_image.GetDirection())
 
-            # Set other image characteristics
-            predicted_image.SetOrigin(dataset_info["files"][p_id]["new_volume_info"]["origin"])
-            predicted_image.SetSpacing(dataset_info["files"][p_id]["new_volume_info"]["spacing"])
-            predicted_image.SetDirection(tuple(dataset_info["files"][p_id]["new_volume_info"]["direction"]))
+        if orig_data_image.GetSize() != predicted_image.GetSize():
+            print("Shapes don't match")
+            print(orig_data_image.GetSize(), predicted_image.GetSize())
 
-            # Write the image to the disk.
-            sitk.WriteImage(predicted_image, res_path + "/prediction.seg.nrrd")
+        # Make the predictions folder is it doesn't exit.
+        if not os.path.exists(save_location):
+            os.mkdir(save_location) 
 
-            print("Postprocessing... ", end="")
-            orig_label_path = dataset_info["files"][p_id]["orig_volume_info"]["labelFilePath"]
-            orig_label_image = sitk.ReadImage(os.path.join(opt.data_root, orig_label_path))
+        # Write the image to the disk.
+        sitk.WriteImage(predicted_image, os.path.join(save_location, orig_data_name))
 
-            resampled_result_image = resample_3D_image(sitkImage = predicted_image,
-                                                newSpacing = orig_label_image.GetSpacing(), 
-                                                interpolation = "nearest", 
-                                                newDirection = orig_label_image.GetDirection(), 
-                                                change_spacing = True, change_direction = True,
-                                                newOrigin = orig_label_image.GetOrigin(),
-                                                postProcess=True)
+        return orig_predt_array
 
-            result_orig_shape = sitk.GetArrayFromImage(resampled_result_image).astype(np.uint8)
-            orig_label = sitk.GetArrayFromImage(orig_label_image).astype(np.uint8)
+    def test(self, test_completed=False):
+        
+        # Perform validation by setting mode = Eval
+        self.model.eval()
 
-            print("done.", end="\n")
+        # Make sure that the gradients will not be altered or calculated.
+        with torch.no_grad():
 
-            # Store result.
-            print("Writing to permanent memory... ", end="")
-            start_write = time.time()
+            # Go through each test file.
+            for current_file_path in self.test_files:
 
-            sitk.WriteImage(sitk.Cast(resampled_result_image, sitk.sitkUInt8), 
-                            os.path.join(postprocessed_path, os.path.split(orig_label_path)[-1]), True)
+                print("\nPredicting label for image: {}".format(os.path.split(current_file_path)[-1]))
+                
+                # Get the test volume.
+                data_array, data_info = self.get_volume_array_and_info(file_location=current_file_path)
+                data_array = torch.FloatTensor(data_array)
+                data_array = utils.normalize(data_array, opt=self.predictor_options)
 
-            print("Finished in {}s.".format(round(time.time() - start_write, 2)))
-            total_time = time.time() - start_time
-            overall_time.append(total_time)
+                # Create an empty array to store the results of all the folds.
+                sum_array = torch.zeros_like(data_array).numpy()
 
-            # Compute validation metrics.
-            print("Computing metrics...")
-            test_metrics = utils.compute_metrics(input=torch.ByteTensor(np.expand_dims(result_orig_shape, axis=(0,1))), 
-                                                target=torch.ByteTensor(np.expand_dims(orig_label, axis=(0,1))), 
-                                                metrics=test_metrics, opt=opt)
-          
-            # Write losses into file.
-            print("DSC: {}, HSD: {}, ICC: {}, ARI: {}, ASSD: {} \n".
-                  format(test_metrics["DSC"][-1], test_metrics["HSD"][-1], test_metrics["ICC"][-1], test_metrics["ARI"][-1], test_metrics["ASSD"][-1]
-                  ))
-            # Write final results into file.
-            with open(os.path.join(opt.results_path, "test_results_detailed.csv"), 'a', newline='') as csvfile:
-                writer = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-                writer.writerow([p_id, test_metrics["DSC"][-1], test_metrics["HSD"][-1], test_metrics["ICC"][-1], test_metrics["ARI"][-1], test_metrics["ASSD"][-1], seg_time, total_time])
-    
-    write_final_results(opt=opt, test_metrics=test_metrics, overall_seg_time=overall_seg_time, overall_time=overall_time)
+                # Move the input volume in the device.
+                data_array = data_array.to(self.device)
 
+                # Go through each fold network and make predictions.
+                for current_fold in range(self.k_fold):
+                    
+                    # Since we already loaded checkpoint of fold 0, we can skip the step.
+                    if current_fold !=0:
+
+                        # Set the location of the current fold results.    
+                        fold_results_path = os.path.join(self.exp_path, "fold_" + str(current_fold))
+
+                        # Load the saved checkpoint from the training.
+                        self.current_checkpoint = torch.load(os.path.join(fold_results_path,'best_net.sausage'), 
+                                                    map_location=self.device)
+
+                    # Load the saved weights to the model.
+                    self.model.load_state_dict(self.current_checkpoint["model_state_dict"])
+                    
+                    with torch.cuda.amp.autocast():
+
+                        # Feed the data into the model using sliding window technique.
+                        out_M = sliding_window_inference(                                            
+                                inputs=data_array.unsqueeze(0).unsqueeze(0),
+                                roi_size=tuple(self.predictor_options.patch_shape),
+                                sw_batch_size=2,
+                                predictor=self.model,
+                                overlap=0.5,
+                                )
+
+                    # Add the predicted labels together for voting.
+                    sum_array += utils.get_array(torch.sigmoid(out_M))
+
+                # Voting is done by taking the average of sum array across all the folds.
+                predicted_array = sum_array / float(self.k_fold) 
+                predicted_array = np.where(predicted_array < 0.5, 0, 1)
+
+                save_location = os.path.join(self.exp_path, "test_predictions_postprocessed")
+                temp_save_location = os.path.join(self.exp_path, "test_predictions")
+
+                predicted_array_orig = self.save_test_post_processed(predicted_array=predicted_array, 
+                                            orig_data_path=current_file_path,
+                                            save_location=save_location,
+                                            temp_save_location=temp_save_location,
+                                            data_info=data_info)
+
+                unique_vals, unique_counts = np.unique(predicted_array_orig, return_counts=True)
+                print("Image {} has {} different labels with {} counts each.".
+                    format(os.path.split(current_file_path)[-1], unique_vals, unique_counts))
+
+            test_completed = True
+        return test_completed
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--divisor", type=int, default=2, required=False, help="Patch overlap for sliding window. Overlap is 1/divisor. More = slower computation time, less = worse performance... More or less...")
-    parser.add_argument("--trained_model_path", type=str, default="best_net.sausage", required=True, help="Path to trained model.")
-    parser.add_argument("--results_path", type=str, default="results/test/", required=False, help="Path to store the results.")
-    parser.add_argument("--data_root", type=str, default="", required=True, help="Path to data.")
+    parser.add_argument("--exp_path", type=str, default="results/training/unet/", required=False, help="Path to read the results of the cross-validation.")
+    parser.add_argument("--test_results_path", type=str, default="results/test/unet/", required=False, help="Path to store the test predictions.")
+    parser.add_argument("--data_root", type=str, default="data/test", required=True, help="Path to data.")
     parser.add_argument('--device_id', type=int, default=0, required=False, help='Use the different GPU(device) numbers available. Example: If two Cuda devices are available, options: 0 or 1')
-    parser.add_argument("--model_name", type=str, default="unet", required=False, help="Select name of trained model. If available, model name will be read from model state dict, else from this option.")
-    parser.add_argument('--input_channels', type=int, default=1, required=False, help='Number of channels in the input data. If available, it will be read from model state dict, else from this option.')
-    parser.add_argument('--output_channels', type=int, default=1, required=False, help='Number of channels in the output label. If available, it will be read from model state dict, else from this option.')
-    parser.add_argument('--fold', type=int, default=-1, required=False, choices = [0,1,2,3,4,5,6,7], help='Select the fold index for 5-fold crosss validation. If fold == -1 all data in the folder will be used for training and validation.')
-    parser.add_argument('--no_shuffle', action='store_true', required=False, help='If set, training and validation data will not be shuffled')
-    parser.add_argument('--k_fold', type=int, default=0, required=False, choices = [0,5,8], help='Choose between no crosss validation (ensure separate folders for train and test), or 5-fold crosss validation or 8-fold crosss validation. ')
-    parser.add_argument("--noise", type=str, default="none", choices=["none", "random", "motion", "blur"], required=False, help="Select noise to add.")
-    parser.add_argument("--blur_std", type=float, default=2, required=False, help="The amount of standard deviation to be applied to create blur noise.")
-    parser.add_argument("--random_std", type=float, default=45, required=False, help="The amount of standard deviation to be applied to create random noise.")
-    parser.add_argument("--motion_transforms", type=int, default=1, required=False, help="The number of transforms to be applied to create motion noise.")
+    parser.add_argument('--k_fold', type=int, default=5, required=False, choices = [1,5,8], help='Choose between no crosss validation (ensure separate folders for train and test), or 5-fold crosss validation or 8-fold crosss validation. ')
     opt = parser.parse_args()
 
-    test(opt=opt)
+    tester = Predictor(predictor_options=opt)
+    test_completed = False
+    while test_completed is False:
+        test_completed = tester.test(test_completed=test_completed)
+    print("Prediction is completed")
 

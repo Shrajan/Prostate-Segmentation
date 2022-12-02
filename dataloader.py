@@ -16,17 +16,21 @@
     |    05 August 2021     |     Dejan Kostyszyn      |    Implemented cross-validation.    |
     |    25 August 2021     |     Shrajan Bhandary     | Unit tests to ensure data validity. |
     |    22 January 2022    |     Shrajan Bhandary     | Cleaned up stuff and added comments.|
-    |    26 July 2022       |     Shrajan Bhandary     |    Optimized data loading method.   |
     |----------------------------------------------------------------------------------------|
 '''
 
 # LIBRARY IMPORTS
-import os, torch, utils, json, random, nrrd
+import os, torch, utils, json, random, nrrd, tqdm, time
 import numpy as np
 from os.path import join
 from natsort import natsorted
 import SimpleITK as sitk
 torch.manual_seed(2021)
+from batchgenerators.utilities.file_and_folder_operations import *
+from sklearn.model_selection import KFold
+
+# Faster runtime.
+torch.backends.cudnn.benchmark = True
 
 # IMPLEMENTATION
 
@@ -36,9 +40,16 @@ class Dataset(torch.utils.data.Dataset):
     * Retrieves complete dataset information from the JSON file.
     * Reads file paths from the JSON file.
     * Segregates files into train, val and test.
+    * 
      
     param opt               # Command line arguments from the user or default values from the options file.
     param split_type        # Type of data split: options = ["train", "val", "test"]
+
+    Returns:
+    * function __len__() -> built-in function of the class "torch.utils.data.Dataset" that returns 
+                            length of the current type of data, i.e., number of training or val 
+                            or test samples.
+    * 
 
     The data should have the following folder structure. Train and test can be in separate folders if
     cross-validation is not being done.
@@ -76,36 +87,22 @@ class Dataset(torch.utils.data.Dataset):
 
         # Get the required information about the volumes.
         self.patient_ids, self.data_paths, self.label_paths, self.mask_paths = self.read_data_paths()
-        
+
         # Get data indices based on the split type, k-fold and fold.
         self.determine_split_indices(opt=self.opt, split_type=self.split_type)
 
-        # Variable to ensure all the volumes have the spacing voxel spacings.
-        self.voxel_spacing = None
-
-        # Variable store all the loaded files.
-        self.loadedFiles = {}
-    
-        # This variable is set, so that the main memory does not explode.
-        if "store_loaded_data" in self.opt:
-            if not self.opt.store_loaded_data:
-                self.max_nr_of_files_to_store = 0
-            else:
-                self.max_nr_of_files_to_store = 170
-
         # Determine the data indices of the current split.
-        self.split_idx = self.get_split_idx(split_type=self.split_type)
-
+        self.split_idx = self.get_split_idx()
 
     def __len__(self):
         return len(self.split_idx)
         
-    def get_split_idx(self, split_type="train"):
-        if split_type == "train":
+    def get_split_idx(self):
+        if self.split_type == "train":
             return self.train_idx
-        elif split_type == "test":
+        elif self.split_type == "test":
             return self.test_idx
-        elif split_type == "val":
+        elif self.split_type == "val":
             return self.val_idx
 
     def nr_of_patients(self):
@@ -146,13 +143,6 @@ class Dataset(torch.utils.data.Dataset):
                                 self.dataset_info["files"][p_id]["new_volume_info"]["dataFilePath"]))
             label_paths.append(join(data_root, 
                                 self.dataset_info["files"][p_id]["new_volume_info"]["labelFilePath"]))
-            
-            # Future work for prostate cancer detection.
-            m_path = join(data_root, p_id, "prostate.nrrd")
-            if os.path.exists(m_path):
-                mask_paths.append(m_path)
-            else:
-                mask_paths.append(None)
             
         return patient_ids, data_paths, label_paths, mask_paths
 
@@ -195,6 +185,7 @@ class Dataset(torch.utils.data.Dataset):
             else:    
                 self.train_size = int(0.8*len(self.patient_ids))
                 self.val_size = len(self.patient_ids) - self.train_size
+                #self.train_size = -9
                 self.train_idx = self.data_idx[:self.train_size]
                 self.val_idx = self.data_idx[self.train_size:]
 
@@ -218,35 +209,13 @@ class Dataset(torch.utils.data.Dataset):
 
         # 5-fold cross-validation.
         elif opt.k_fold == 5:  
-            self.train_val_size = int(0.8*len(self.patient_ids))
-            self.test_size = len(self.patient_ids) - self.train_val_size
+            self.train_size = int(0.8*len(self.patient_ids))
+            self.val_size = len(self.patient_ids) - self.train_size
 
-            if opt.fold == 0:
-                self.test_idx = self.data_idx[:self.test_size]
-                self.train_val_idx = self.data_idx[self.test_size:]
-
-            elif opt.fold == 1:
-                self.test_idx = self.data_idx[self.test_size:self.test_size*2]
-                list1, list2 = list(self.data_idx[:self.test_size]), list(self.data_idx[self.test_size*2:])
-                self.train_val_idx = list1 + list2
-
-            elif opt.fold == 2:
-                self.test_idx = self.data_idx[self.test_size*2:self.test_size*3]
-                list1, list2 = list(self.data_idx[:self.test_size*2]), list(self.data_idx[self.test_size*3:])
-                self.train_val_idx = list1 + list2
-            
-            elif opt.fold == 3:
-                self.test_idx = self.data_idx[self.test_size*3:self.test_size*4]
-                list1, list2 = list(self.data_idx[:self.test_size*3]), list(self.data_idx[self.test_size*4:])
-                self.train_val_idx = list1 + list2
-
-            elif opt.fold == 4:
-                self.test_idx = self.data_idx[self.test_size*4:]
-                self.train_val_idx = list(self.data_idx[:self.test_size*4])
-            
-            self.train_val_idx = np.random.permutation(self.train_val_idx)
-            self.train_idx = self.train_val_idx[:int(0.8*len(self.train_val_idx))]
-            self.val_idx = self.train_val_idx[int(0.8*len(self.train_val_idx)):]
+            kf = KFold(n_splits=5)
+            for idx, (train_index, test_index) in enumerate(kf.split(self.data_idx)):
+                if idx == opt.fold:
+                    self.train_idx, self.val_idx = self.data_idx[train_index], self.data_idx[test_index]
 
     def __getitem__(self, idx):
         """
@@ -255,90 +224,40 @@ class Dataset(torch.utils.data.Dataset):
         current_idx = self.split_idx[idx]
         p_id = self.patient_ids[current_idx]
 
-        # return already loaded data
-        if p_id not in self.loadedFiles:
-            
-            # Read data from memory.
-            data = sitk.ReadImage(self.data_paths[current_idx])
+        # Read data and label from memory.
+        data_array, data_header = nrrd.read(self.data_paths[current_idx])
+        label_array, label_header = nrrd.read(self.label_paths[current_idx])
+        
+        # Ensure binary maps.
+        label_array = np.where(label_array>0,1,0)
 
-            # Read label from memory.
-            label = sitk.ReadImage(self.label_paths[current_idx])
+        # Clip data to 0.5 and 99.5 percentiles.
+        if self.opt.clip == True:
+            low, high = np.percentile(data_array, [0.5, 99.5])
+            data_array = np.clip(data_array, low, high) 
 
-            # Get the voxel spacing of the data and the label.
-            data_spacing = data.GetSpacing()
-            label_spacing = label.GetSpacing()
+        # Convert numpy to torch format.
+        data_array = torch.FloatTensor(data_array)
+        label_array = torch.ByteTensor(label_array)
 
-            # Check whether the input and ground truth have same spacing.
-            if self.different_spacing(data_spacing, label_spacing):
-                print("The spacing of the input is: {}. ".format(data_spacing))
-                print("The spacing of the label is: {}. ".format(label_spacing))
-                raise Exception("The spacing of data and label don't match.")
+        if self.split_type == "train":
 
-            # Set the voxel spacing of the dataset.
-            if self.voxel_spacing is None:
-                self.voxel_spacing = data_spacing
-
-            # Make sure that all samples of the dataset have the same spacing.
-            elif self.different_spacing(self.voxel_spacing, data_spacing):
-                print("The spacing of the previous input is: {}. ".format(self.voxel_spacing))
-                print("The spacing of the current input is: {}. ".format(data_spacing))
-                raise Exception("The spacing of current input and previous input don't match.")
-
-            data = sitk.GetArrayFromImage(data).astype(np.float32).transpose(2, 1, 0) # Transpose, because sitk uses different coordinate system than pynrrd.
-            label = sitk.GetArrayFromImage(label).astype(np.uint8).transpose(2, 1, 0) # Transpose, because sitk uses different coordinate system than pynrrd.
-            label[label > 0] = 1 # Ensure that all the labels are between 0 and 1.
-            
-            # Clip data to 0.5 and 99.5 percentiles.
-            if not self.opt.no_clip == True:
-                low, high = np.percentile(data, [0.5, 99.5])
-                data = np.clip(data, low, high)
-
-            # Convert numpy to torch format.
-            data = torch.FloatTensor(data)
-            
-            # Real mask if exists and cut label.
-            if self.mask_paths[current_idx] is not None:
-                mask = sitk.ReadImage(self.mask_paths[current_idx])
-                mask = sitk.GetArrayFromImage(mask).astype(np.uint8).transpose(2, 1, 0) # Transpose, because sitk uses different coordinate system than pynrrd.
-                label = np.where(mask == 1, label, 0)
-                mask = torch.ByteTensor(mask)
+            # Decide randomly whether to choose ROI or not.
+            random_value = torch.rand(1)
+            if random_value < self.opt.p_foreground:
+                data_array, label_array = utils.select_roi_patches(data=data_array, label=label_array, opt=self.opt)
             else:
-                mask = None
-
-            label = torch.ByteTensor(label)
-
-            # Store already loaded files in RAM.
-            if self.max_nr_of_files_to_store > 0:
-                self.loadedFiles[p_id] = [p_id, data, label, mask]
-                self.max_nr_of_files_to_store -= 1
-
-        else:
-            p_id, data, label, mask = self.loadedFiles[p_id]
-
-        if self.split_type != "test":
-            # If mask exists, concatenate data and mask, and return as combined data with two channels.
-            if self.split_type == "train":
-
-                # Randomiser to select data with and without ROI.
-                random_float_number = torch.rand(1)             # Get a random floating value between 0 and 1.
-                if random_float_number < self.opt.p_foreground:
-                    data, label = utils.select_roi_patches(data, label, mask, self.opt)
-                else:
-                    data, label = utils.select_random_patches(data, label, mask, self.opt)
-            elif self.split_type == "val":
-                data, label = utils.select_roi_patches(data, label, mask, self.opt)
-
-            if self.opt.switch == True:
-                # Normalization.
-                data = utils.normalize(data, self.opt)
+                data_array, label_array = utils.select_random_patches(data=data_array, label=label_array, opt=self.opt)
 
             # Data augmentation.
-            if not self.opt.no_augmentation == True and self.split_type == "train":
-                data, label = utils.data_augmentation_batch(data, label, self.opt)
+            if self.opt.no_augmentation == False:
+                data_array, label_array = utils.data_augmentation_batch(data_array, label_array, self.opt)
 
-            if self.opt.switch == False:
-                # Normalization.
-                data = utils.normalize(data, self.opt)
+        else:
+            # Adding a channel axis.
+            data_array = data_array.unsqueeze(0)
+            label_array = label_array.unsqueeze(0)
 
-        return p_id, data, label
+        data_array = utils.normalize(data_array, self.opt)
 
+        return p_id, data_array, label_array
