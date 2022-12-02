@@ -154,7 +154,7 @@ PROMISE-12 = 224x224x16
 ```
 
 ### 2.4. Hyperparameter Search ###
-* It is not necessary to perform a hyperparameter search based. However, if needed searching from scratch can be done using [hyperparam_optimization.py](hyperparam_optimization.py) script. 
+* It is not necessary to perform a hyperparameter search. However, if needed, optimization from scratch can be done using [hyperparam_optimization.py](hyperparam_optimization.py) script. 
 * Currently, the script searches the best configuration for `beta1` (range: [0.1-0.9]), `dropout_rate` (range: [0.0-0.7]), `learning_rate` (range: [0.000001-0.1])`n_kernels` (range: [16-48]) and `weight_decay` (range: [0.000001-0.0001]). These can be changed as required by modifying their respective minimum and maximum option values. More information can be found [here](https://automl.github.io/HpBandSter/build/html/auto_examples/example_5_pytorch_worker.html).
 * Additional arguments for hyperparameter search that could be considered: 
 ```
@@ -177,7 +177,7 @@ python hyperparam_optimization.py --data_root data/train_and_test --model_name u
 
 ### 2.5. Model Training ###
 * Training from scratch can be done using [train.py](train.py) script. 
-* If you done a hyperparameter search, you may change the following arguments for training:
+* If you completed a hyperparameter search, you may change the following arguments for training:
 ```
 --lr LR]                                Learning rate for the optimizer. [Default: 0.0001] 
 [--beta1 BETA1]                          Beta1 for Adam solver. [Default: 0.9] 
@@ -211,7 +211,7 @@ python train.py --data_root data/train_and_test --results_path results/training/
 `Note:` Resuming training or transfer learning takes results (model files, csv files) from the folder of the previous run and modifies them. It is recommended to keep a separate copy of the original run. Also `total epochs for further training = training_epochs - starting_epochs`
 
 #### 2.5.4. Cross-validation ####
-* Complete all the required folds (5 or 8), and ensure that the folder `└──validation_predictions_postprocessed` and file `val_results_detailed.csv` are present in each fold.
+* Complete all the required folds (5 or 8), and ensure that the folder `validation_predictions_postprocessed` and file `val_results_detailed.csv` are present in each fold.
 * Collect all the validation samples using the `collect_cv_files.py` script.
 ```
 python collect_cv_files.py --data_root data/train_and_test --exp_path results/training/unet/ --k_fold 5  
