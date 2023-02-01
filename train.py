@@ -1,6 +1,6 @@
 # DOCUMENT INFORMATION
 '''
-    Project Name: Prostate Segmentation
+    Project Name: IB U-Nets
     File Name   : train.py
     Code Author : Dejan Kostyszyn and Shrajan Bhandary
     Created on  : 14 March 2021
@@ -438,8 +438,12 @@ class Trainer():
               np.min(val_post_processed_metrics["DSC"]), np.max(val_post_processed_metrics["DSC"]),
               np.std(val_post_processed_metrics["DSC"])))
 
+        # Clean up.
+        utils.clean_up(opt=self.opt)
+
 if __name__ == "__main__":
     trainer = Trainer()
+    do_training = True
     do_training = trainer.train(do_training = True, max_training_epochs=trainer.max_training_epochs, iterations_per_epoch = 250)
     if do_training is False:
         trainer.inference()

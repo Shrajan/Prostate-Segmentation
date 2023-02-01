@@ -1,7 +1,26 @@
+# DOCUMENT INFORMATION
+'''
+    Project Name: IB U-Nets
+    File Name   : utils.py
+    Code Author : Dejan Kostyszyn and Shrajan Bhandary
+    Created on  : 14 March 2021
+    Program Description:
+        This program contains implementation of utility functions.
+            
+    Versions:
+    |----------------------------------------------------------------------------------------|
+    |-----Last modified-----|----------Author----------|---------------Remarks---------------|
+    |----------------------------------------------------------------------------------------|
+    |    14 March 2021      |     Dejan Kostyszyn      |  Implemented necessary functions.   |
+    |    18 April 2021      |     Shrajan Bhandary     |  Changed structure to object type.  |
+    |    22 January 2022    |     Shrajan Bhandary     | Cleaned up stuff and added comments.|
+    |----------------------------------------------------------------------------------------|
+'''
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os, sys, torch, random, cc3d
-from medpy.metric.binary import hd, dc, assd
+from medpy.metric.binary import dc
 import SimpleITK as sitk
 from pre_processing.resampler_utils import resample_3D_image
 
@@ -367,26 +386,6 @@ class PolynomialLRDecay(_LRScheduler):
             for param_group, lr in zip(self.optimizer.param_groups, decay_lrs):
                 param_group['lr'] = lr
 
-def simluate_sliding_window(data_shape=None, patch_shape=None, divisor=1):
-    coorinate_list = []
-
-    # Computing segmentation.
-    for x in range(0, data_shape[-3] - (patch_shape[0] - patch_shape[0] // divisor), patch_shape[0] // divisor):
-        for y in range(0, data_shape[-2] - (patch_shape[1] - patch_shape[1] // divisor), patch_shape[1] // divisor):
-            for z in range(0, data_shape[-1] - (patch_shape[2] - patch_shape[2] // divisor), patch_shape[2] // divisor):
-                x = min(x, data_shape[-3] - patch_shape[0])
-                y = min(y, data_shape[-2] - patch_shape[1])
-                z = min(z, data_shape[-1] - patch_shape[2])
-
-                patch_coordinates = {'x1': x, 'x2': x + patch_shape[0], 
-                                    'y1': y, 'y2': y + patch_shape[1],   
-                                    'z1': z, 'z2': z + patch_shape[2]
-                                    }
-
-                coorinate_list.append(patch_coordinates)
-
-    return coorinate_list
-
 def keep_only_largest_connected_component(pred_array):
     """
     Takes a binary 3D tensor and removes all contours that
@@ -452,11 +451,14 @@ def save_val_post_processed(p_id=None, dataset_info=None, opt=None):
 
     # Get the saved validation prediction.
     saved_pred_path = os.path.join(validation_predictions_folder, p_id  + ".seg.nrrd")
-    saved_pred_image = sitk.ReadImage(saved_pred_path)
+    #saved_pred_image = sitk.ReadImage(saved_pred_path)
 
     # Resample the predicted image.
     resample_transform = tio.Resample(target = orig_label_path, label_interpolation = 'nearest')
     resampled_pred_image = resample_transform(tio.Image(saved_pred_path, type=tio.LABEL))
+
+    # Delete the predicted image (image with new spacing).
+    os.remove(saved_pred_path) 
 
     # Convert torch image to numpy.
     orig_predt_array = resampled_pred_image["data"][0].numpy().astype(np.uint8)
@@ -482,3 +484,12 @@ def save_val_post_processed(p_id=None, dataset_info=None, opt=None):
 
     return orig_predt_array, orig_label_array, orig_label_name
 
+
+def clean_up(opt=None):
+    validation_predictions_folder = os.path.join(opt.results_path, "validation_predictions")
+
+    try:
+      os.rmdir(validation_predictions_folder)
+    except OSError as error:
+        print(error)
+        print("Directory '%s' can not be removed" %validation_predictions_folder)

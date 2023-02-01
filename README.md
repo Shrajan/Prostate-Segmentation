@@ -20,7 +20,7 @@ The [pre_processing](pre_processing) sub-directory consists of the scripts for t
 The [networks](networks) sub-directory consists of the scripts for the following models:
 1. U-Net - [3D U-Net: Learning Dense Volumetric Segmentation from Sparse Annotation.](https://arxiv.org/abs/1606.06650)
 2. Attention U-Net - [Attention U-Net: Learning Where to Look for the Pancreas.](https://arxiv.org/abs/1804.03999)
-3. SegResNet - [3D MRI brain tumor segmentation using autoencoder regularization](https://arxiv.org/abs/1810.11654)
+3. SegResNet - [3D MRI brain tumor segmentation using auto-encoder regularization](https://arxiv.org/abs/1810.11654)
 4. V-Net - [V-Net: Fully Convolutional Neural Networks for Volumetric Medical Image Segmentation](https://arxiv.org/abs/1606.04797)
 5. U-Net++ - [UNet++: A Nested U-Net Architecture for Medical Image Segmentation.](https://arxiv.org/abs/1807.10165)
 
