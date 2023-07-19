@@ -241,3 +241,20 @@ python test.py --data_root data/test --exp_path results/testing/unet/ --k_fold 5
 `test_results_path` location will contain the following items for every experiment.
 * `└──test_predictions` folder will contain predicted labels of all the test samples in the framework format (modified version).
 * `└──test_predictions_postprocessed` folder will contain predicted labels of all the test samples after final processing is done. These volumes will have their original format (size, spacings, direction, origin etc.) and original names.
+
+## Citation ##
+
+```bibtex
+Please also cite this paper if you are using this work in your research!
+@article{BHANDARY2023102241,
+title = {Investigation and benchmarking of U-Nets on prostate segmentation tasks},
+author = {Shrajan Bhandary and Dejan Kuhn and Zahra Babaiee and Tobias Fechter and Matthias Benndorf and Constantinos Zamboglou and Anca-Ligia Grosu and Radu Grosu},
+journal = {Computerized Medical Imaging and Graphics},
+volume = {107},
+pages = {102241},
+year = {2023},
+issn = {0895-6111},
+doi = {https://doi.org/10.1016/j.compmedimag.2023.102241},
+url = {https://www.sciencedirect.com/science/article/pii/S0895611123000599},
+}
+```
